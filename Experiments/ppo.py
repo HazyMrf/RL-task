@@ -191,7 +191,7 @@ class PPO:
 
 
 
-class DecoupledPPO:
+class EWMA_PPO:
     def __init__(self, policy, optimizer, cliprange=0.2, value_loss_coef=0.5,
                  max_grad_norm=0.5, beta_ewma=0.99):
         """
@@ -204,6 +204,7 @@ class DecoupledPPO:
         self.value_loss_coef = value_loss_coef
         self.max_grad_norm = max_grad_norm
         self.optimizer = optimizer
+        self.total_weight = 1
 
         self.policy_prox = copy.deepcopy(policy) # pi_proxy
         for p in self.policy_prox.model.parameters():
@@ -215,8 +216,10 @@ class DecoupledPPO:
         with torch.no_grad():
             new_total_weight = self.beta_ewma * self.total_weight + 1
             decayed_weight_ratio = self.beta_ewma * self.total_weight / new_total_weight
-            for p, p_ewma in zip(self.model.parameters(), self.model_ewma.parameters()):
+            for p, p_ewma in zip(self.policy.model.parameters(), self.policy_prox.model.parameters()):
                 p_ewma.data.mul_(decayed_weight_ratio).add_(p.data / new_total_weight)
+
+            self.total_weight = new_total_weight
 
     def policy_loss(self, trajectory, curr_act, proxy_act):
         actions = torch.tensor(trajectory["actions"])
