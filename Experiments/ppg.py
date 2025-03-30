@@ -51,19 +51,14 @@ class PPG:
         self.value_loss_coef = value_loss_coef
         self.max_grad_norm = max_grad_norm
 
-        # PPG hyperparams
         self.aux_loss_coef = aux_loss_coef
         self.N_pi = N_pi
         self.N_aux = N_aux
         self.aux_mbsize = aux_mbsize
 
-        # Buffers for the auxiliary phase
         self.state_buffer = []
         self.value_target_buffer = []
 
-    # ------------------------------------------------------------------------
-    # Policy (PPO) losses
-    # ------------------------------------------------------------------------
     def policy_loss(self, trajectory, act):
         """
         Compare new log_probs to old log_probs from trajectory.
@@ -112,15 +107,11 @@ class PPG:
         v_loss = self.value_loss(trajectory, act)
         total_loss = p_loss + self.value_loss_coef * v_loss
 
-        # Save states + value_targets for the aux phase
         self.state_buffer.append(trajectory["observations"])
         self.value_target_buffer.append(trajectory["value_targets"])
 
         return total_loss
 
-    # ------------------------------------------------------------------------
-    # One policy-phase update
-    # ------------------------------------------------------------------------
     def step(self, trajectory):
         """
         Typical usage: for each batch/trajectory, call step once.
@@ -134,9 +125,6 @@ class PPG:
 
         return total_loss.item()
 
-    # ------------------------------------------------------------------------
-    # Auxiliary phase: freeze policy, train value model
-    # ------------------------------------------------------------------------
     def auxiliary_loss(self, states, value_targets):
         """
         We'll feed states into self.policy.model.get_value(...) and
@@ -151,11 +139,9 @@ class PPG:
         return F.mse_loss(pred_values, vt)
 
     def run_aux_phase(self):
-        # If we haven't stored anything, skip
         if not self.state_buffer:
             return
 
-        # Flatten everything we stored
         states_np = np.concatenate(self.state_buffer, axis=0)
         vtargets_np = np.concatenate(self.value_target_buffer, axis=0)
         data_size = states_np.shape[0]
@@ -168,7 +154,6 @@ class PPG:
             p.requires_grad = True
 
         for _ in range(self.N_aux):
-            # Shuffle
             perm = np.random.permutation(data_size)
             start_i = 0
             while start_i < data_size:
@@ -188,7 +173,6 @@ class PPG:
 
                 start_i = end_i
 
-        # Clear buffers
         self.state_buffer.clear()
         self.value_target_buffer.clear()
 
@@ -225,25 +209,19 @@ class EWMA_PPG:
         self.value_loss_coef = value_loss_coef
         self.max_grad_norm = max_grad_norm
 
-        # Make EWMA "prox" policy
         self.policy_prox = copy.deepcopy(policy)
         for param in self.policy_prox.model.parameters():
             param.requires_grad = False
         self.beta_ewma = beta_ewma
 
-        # PPG settings
         self.aux_loss_coef = aux_loss_coef
         self.N_pi = N_pi
         self.N_aux = N_aux
         self.aux_mbsize = aux_mbsize
 
-        # Buffers for the auxiliary phase
         self.state_buffer = []
         self.value_target_buffer = []
 
-    # ------------------------------------------------------------------------
-    # Update prox policy via an exponential moving average
-    # ------------------------------------------------------------------------
     def update_prox_policy(self):
         with torch.no_grad():
             for p_main, p_prox in zip(self.policy.model.parameters(),
@@ -252,18 +230,14 @@ class EWMA_PPG:
                     p_main.data, alpha=(1.0 - self.beta_ewma)
                 )
 
-    # ------------------------------------------------------------------------
-    # Policy-phase (Decoupled PPO) objectives
-    # ------------------------------------------------------------------------
     def policy_loss(self, trajectory, curr_act, prox_act):
         """
         trajectory: dict with "actions", "advantages", etc.
         curr_act, prox_act: output of .act(..., training=True/False) for current/prox
         """
-        actions = torch.tensor(trajectory["actions"], dtype=torch.float32)  # continuous
+        actions = torch.tensor(trajectory["actions"], dtype=torch.float32)
         advantages = torch.tensor(trajectory["advantages"], dtype=torch.float32)
 
-        # current vs old log-prob
         new_log_probs = curr_act["distribution"].log_prob(actions)
         with torch.no_grad():
             old_log_probs = prox_act["distribution"].log_prob(actions)
@@ -284,7 +258,6 @@ class EWMA_PPG:
         with torch.no_grad():
             old_values = prox_act["values"]
 
-        # clipped value loss
         unclipped = (values - returns) ** 2
         clipped_val = old_values + torch.clamp(values - old_values, -self.cliprange, self.cliprange)
         clipped = (clipped_val - returns) ** 2
@@ -304,15 +277,11 @@ class EWMA_PPG:
         v_loss = self.value_loss(trajectory, curr_act, prox_act)
         total_loss = p_loss + self.value_loss_coef * v_loss
 
-        # Save data for the auxiliary phase: here we store states + final returns
         self.state_buffer.append(trajectory["observations"])
         self.value_target_buffer.append(trajectory["value_targets"])
 
         return total_loss
 
-    # ------------------------------------------------------------------------
-    # Single policy-phase update
-    # ------------------------------------------------------------------------
     def step(self, trajectory):
         self.optimizer.zero_grad()
         loss_val = self.policy_phase_loss(trajectory)
@@ -325,11 +294,6 @@ class EWMA_PPG:
 
         return loss_val.item()
 
-    # ------------------------------------------------------------------------
-    # Auxiliary phase
-    #   * freeze policy part (policy_model)
-    #   * train value_model more thoroughly on (states -> value_targets)
-    # ------------------------------------------------------------------------
     def auxiliary_loss(self, states, value_targets):
         """
         We'll re-run the value model on stored states, ignoring the policy part.
@@ -381,7 +345,6 @@ class EWMA_PPG:
 
                 start_i = end_i
 
-        # Clear buffer
         self.state_buffer.clear()
         self.value_target_buffer.clear()
 
@@ -389,8 +352,3 @@ class EWMA_PPG:
         for p in self.policy.model.policy_model.parameters():
             p.requires_grad = True
 
-    # ------------------------------------------------------------------------
-    # One iteration of EWMA-PPG:
-    #   1) policy phase (N_pi decoupled PPO updates)
-    #   2) auxiliary phase (train value model with policy part frozen)
-    # ------------------------------------------------------------------------
