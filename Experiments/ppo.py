@@ -213,11 +213,10 @@ class DecoupledPPO:
 
     def update_prox_policy(self):
         with torch.no_grad():
-            for p_main, p_prox in zip(self.policy.model.parameters(),
-                                      self.policy_prox.model.parameters()):
-                p_prox.data.mul_(self.beta_ewma).add_(
-                    p_main.data, alpha=(1.0 - self.beta_ewma)
-                )
+            new_total_weight = self.beta_ewma * self.total_weight + 1
+            decayed_weight_ratio = self.beta_ewma * self.total_weight / new_total_weight
+            for p, p_ewma in zip(self.model.parameters(), self.model_ewma.parameters()):
+                p_ewma.data.mul_(decayed_weight_ratio).add_(p.data / new_total_weight)
 
     def policy_loss(self, trajectory, curr_act, proxy_act):
         actions = torch.tensor(trajectory["actions"])
